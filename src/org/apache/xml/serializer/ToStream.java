@@ -174,7 +174,14 @@ abstract public class ToStream extends SerializerBase
      * which is exiting older behavior.
      */
     private boolean m_expandDTDEntities = true;
-  
+
+    /**
+     * This variable stores the high surrogate char when it's given
+     * as very last char of the 1024-bytes chunk. Then it can be
+     * used when handling the low surrogate on next chunk. This is
+     * a fix for https://bugs.openjdk.org/browse/JDK-8207760
+     */
+    private char savedHighSurrogate = 0;
 
     /**
      * Default constructor
@@ -1517,8 +1524,8 @@ abstract public class ToStream extends SerializerBase
              */            
             if (i < end || !isAllWhitespace) 
                 m_ispreserve = true;
-            
-            
+
+
             for (; i < end; i++)
             {
                 char ch = chars[i];
@@ -1602,11 +1609,29 @@ abstract public class ToStream extends SerializerBase
                     }
                     else if (Encodings.isHighUTF16Surrogate(ch)) {
                         writeOutCleanChars(chars, i, lastDirtyCharProcessed);
-                        writeUTF16Surrogate(ch, chars, i, end);
-                        // two input characters processed
-                        // this increments by one and the for()
-                        // loop i elf increments by another one.
-                        lastDirtyCharProcessed = ++i;
+                        if (i < end - 1) {
+                            writeUTF16Surrogate(ch, chars, i, end);
+                            // two input characters processed
+                            // this increments by one and the for()
+                            // loop i elf increments by another one.
+                            lastDirtyCharProcessed = ++i;
+                        }
+                        else {
+                            // don't write high surrogate char, but
+                            // store it in a buffer; we'll write it
+                            // when we'll read the low surrogate
+                            this.savedHighSurrogate = ch;
+                            lastDirtyCharProcessed = i;
+                        }
+                    }
+                    else if (this.savedHighSurrogate != 0 && Encodings.isLowUTF16Surrogate(ch)) {
+                        // let's write the combination of previously
+                        // stored high surrogate char and the current
+                        // low surrogate char
+                        // @fixme Should we take care of encoding ?
+                        writer.write(new char[] { this.savedHighSurrogate, ch }, 0, 2);
+                        this.savedHighSurrogate = 0;
+                        lastDirtyCharProcessed = i;
                     }
                     else {
                         // This is a fallback plan, we should never get here
